@@ -1,0 +1,9 @@
+customtkinter
+groq
+matplotlib
+numpy
+opencv-python
+Pillow
+python-dotenv
+torch
+torchvision

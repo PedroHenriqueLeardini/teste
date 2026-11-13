@@ -1,0 +1,2 @@
+"""Estrategias concretas de segmentacao."""
+

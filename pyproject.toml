@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "removedor-fundo"
+version = "0.1.0"
+description = "Aplicacao desktop modular para remocao de fundo e experimentos de segmentacao"
+requires-python = ">=3.10"
+dependencies = [
+    "customtkinter",
+    "groq",
+    "matplotlib",
+    "numpy",
+    "opencv-python",
+    "Pillow",
+    "python-dotenv",
+    "torch",
+    "torchvision",
+]
+
+[project.optional-dependencies]
+svg = ["CairoSVG"]
+
+[project.scripts]
+removedor-fundo = "removedor_fundo.presentation.desktop:main"
+
+[tool.setuptools]
+py-modules = [
+    "ai",
+    "dataset_utils",
+    "evaluation",
+    "experimento_lote",
+    "fft_analysis",
+    "fft_mascara",
+    "image_processing",
+    "main",
+    "pipeline",
+    "segmentation",
+    "tools",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["removedor_fundo*", "Front*"]
+exclude = ["tests*"]
