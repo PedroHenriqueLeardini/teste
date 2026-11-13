@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from removedor_fundo.infrastructure.datasets.oxford_pet import (
+from removedor_fundo.infrastructure.dataset.oxford_pet import (
     OxfordPetDatasetRepository,
 )
 
