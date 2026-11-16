@@ -163,8 +163,9 @@ def aplicar_lpf(imagem, frequencia_corte):
     dft = cv2.dft(cinza_f)
     # Centralizar para facilitar a criação do filtro
     dft_shift = np.fft.fftshift(dft)
-    # Grade de frequência
+    # Grade de frequência (centralizada para corresponder à DFT deslocada)
     fx, fy = _get_freq_grid(cinza_f.shape)
+    fx, fy = np.fft.fftshift(fx), np.fft.fftshift(fy)
     # Calcular a magnitude da frequência radial em ciclos/pixel
     freq_mag = np.hypot(fx, fy)
     # Máscara do filtro: 1 onde freq_mag <= corte, 0 caso contrário
@@ -225,6 +226,7 @@ def aplicar_hpf(imagem, frequencia_corte):
     dft = cv2.dft(cinza_f)
     dft_shift = np.fft.fftshift(dft)
     fx, fy = _get_freq_grid(cinza_f.shape)
+    fx, fy = np.fft.fftshift(fx), np.fft.fftshift(fy)
     freq_mag = np.hypot(fx, fy)
     # Filtro passa-alta: 1 onde freq_mag > corte
     filtro = (freq_mag > frequencia_corte).astype(np.float64)
