@@ -24,6 +24,8 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+from PIL import ImageDraw  # usado para desenhar o "X" do hover do thumbnail (sem depender de cairosvg)
+
 import customtkinter as ctk
 from tkinter import Canvas, filedialog, messagebox
 
@@ -132,6 +134,40 @@ def svg_to_ctk_image(svg_str: str, size: tuple[int, int], color: Optional[str] =
     )
     img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     return ctk.CTkImage(light_image=img, dark_image=img, size=size)
+
+
+def criar_thumb_hover(img: Image.Image) -> Image.Image:
+    """Devolve uma cópia do thumbnail escurecida, com um "X" branco minimalista no centro.
+
+    Usada pelo DropZone: quando o mouse passa por cima da miniatura, ela é trocada
+    por esta versão; ao clicar, a imagem é removida.
+    O X é desenhado direto com PIL (e não com os SVGs de icons.py) de propósito:
+    assim ele aparece mesmo quando o cairosvg não está instalado.
+    """
+    base = img.convert("RGBA")
+    largura, altura = base.size
+
+    # 1) Escurece a imagem (preto com ~60% de opacidade por cima)
+    base = Image.alpha_composite(base, Image.new("RGBA", base.size, (0, 0, 0, 150)))
+
+    # 2) Desenha o X em resolução 4x e reduz depois (suaviza as bordas / anti-aliasing)
+    ss = 4
+    camada = Image.new("RGBA", (largura * ss, altura * ss), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(camada)
+    cx, cy = largura * ss / 2, altura * ss / 2
+    menor = min(largura, altura) * ss
+    meia = menor * 0.085                           # meia-diagonal do X (tamanho do X)
+    espessura = max(2, int(menor * 0.03))          # espessura do traço
+
+    for (x1, y1, x2, y2) in ((cx - meia, cy - meia, cx + meia, cy + meia),
+                             (cx - meia, cy + meia, cx + meia, cy - meia)):
+        draw.line((x1, y1, x2, y2), fill="#FFFFFF", width=espessura)
+        for px, py in ((x1, y1), (x2, y2)):  # pontas arredondadas
+            r = espessura / 2
+            draw.ellipse((px - r, py - r, px + r, py + r), fill="#FFFFFF")
+
+    camada = camada.resize((largura, altura), Image.Resampling.LANCZOS)
+    return Image.alpha_composite(base, camada)
 
 
 class IconCache:
@@ -311,6 +347,8 @@ class DropZone(ctk.CTkFrame):
     """
     Área de upload com 2 estados: vazio (checkerboard sutil + ícone) / preenchido (thumbnail).
     Click em qualquer área do card vazio abre filedialog.
+    No estado preenchido, passar o mouse sobre o thumbnail escurece a imagem e mostra um "X";
+    clicar nele remove a imagem e volta ao estado vazio (para escolher outra).
     """
     def __init__(self, master, on_change=None, on_remove=None, **kwargs):
         super().__init__(
@@ -326,6 +364,8 @@ class DropZone(ctk.CTkFrame):
         self.on_remove = on_remove
         self.caminho_atual: Optional[Path] = None
         self._thumb_ctk = None
+        self._thumb_hover_ctk = None   # versão escurecida com "X" (exibida no hover)
+        self._bloqueado = False        # True enquanto processa: impede remover a imagem
         self._criar_ui()
         self._estado_vazio()
 
@@ -396,6 +436,11 @@ class DropZone(ctk.CTkFrame):
         # Click delegado no container vazio — único handler para toda a área
         self._bind_click_delegado(self.frame_vazio, self._on_click_vazio)
 
+        # Hover/click no thumbnail do estado preenchido (escurece + "X" para remover)
+        self.lbl_thumb.bind("<Enter>", self._on_thumb_enter)
+        self.lbl_thumb.bind("<Leave>", self._on_thumb_leave)
+        self.lbl_thumb.bind("<Button-1>", self._on_thumb_click)
+
     def _estado_vazio(self):
         self.frame_cheio.grid_remove()
         self.frame_vazio.grid(row=0, column=0, sticky="nsew")
@@ -425,9 +470,16 @@ class DropZone(ctk.CTkFrame):
             img = img.convert("RGBA")
             img.thumbnail((136, 136), Image.Resampling.LANCZOS)
             self._thumb_ctk = ctk.CTkImage(light_image=img, dark_image=img, size=(img.width, img.height))
+            # Versão do hover (escurecida + "X"), pré-gerada aqui para o hover ser instantâneo
+            img_hover = criar_thumb_hover(img)
+            self._thumb_hover_ctk = ctk.CTkImage(
+                light_image=img_hover, dark_image=img_hover, size=(img_hover.width, img_hover.height)
+            )
+            self._sair_hover()  # garante cursor/imagem normais ao carregar um novo arquivo
             self.lbl_thumb.configure(image=self._thumb_ctk, text="")
         except Exception:
             self._thumb_ctk = None
+            self._thumb_hover_ctk = None  # sem thumbnail real, não há hover
             self.lbl_thumb.configure(image="", text="🖼️", font=ctk.CTkFont(size=40))
 
         tamanho_mb = caminho.stat().st_size / (1024 * 1024)
@@ -440,12 +492,45 @@ class DropZone(ctk.CTkFrame):
 
     def _remover(self):
         self._thumb_ctk = None
+        self._thumb_hover_ctk = None
+        self._sair_hover()
         self.lbl_thumb.configure(image="", text="")
         self._estado_vazio()
         if self.on_remove:
             self.on_remove()
 
     def limpar(self):
+        self._remover()
+
+    def definir_bloqueado(self, bloqueado: bool):
+        """Liga/desliga a remoção da imagem (usado pelo App enquanto o processamento roda).
+        Bloqueado: o hover/"X" do thumbnail e o botão remover do canto ficam inativos."""
+        self._bloqueado = bloqueado
+        self.btn_remover.configure(state="disabled" if bloqueado else "normal")
+        if bloqueado:
+            self._sair_hover()
+
+    # ── Hover do thumbnail (escurece + "X" para remover) ──
+    def _sair_hover(self):
+        """Volta o thumbnail ao visual normal (imagem original e cursor padrão)."""
+        if self._thumb_ctk is not None:
+            self.lbl_thumb.configure(image=self._thumb_ctk)
+        self.lbl_thumb.configure(cursor="")
+
+    def _on_thumb_enter(self, event=None):
+        """Mouse entrou no thumbnail: troca pela versão escurecida com "X"."""
+        if self._bloqueado or self._thumb_hover_ctk is None:
+            return
+        self.lbl_thumb.configure(image=self._thumb_hover_ctk, cursor="hand2")
+
+    def _on_thumb_leave(self, event=None):
+        """Mouse saiu do thumbnail: restaura o visual normal."""
+        self._sair_hover()
+
+    def _on_thumb_click(self, event=None):
+        """Click no thumbnail (com o "X" visível): remove a imagem atual."""
+        if self._bloqueado or self._thumb_hover_ctk is None or self.caminho_atual is None:
+            return
         self._remover()
 
     # ── Helpers de click delegado ──

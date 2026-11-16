@@ -1,6 +1,14 @@
 import cv2
 import numpy as np
 
+# Funções de filtragem de frequência no domínio da frequência (somente análise para este módulo)
+# As funções de filtragem estão implementadas nesta seção.
+# Funções de filtragem no domínio da frequência (somente análise)
+# A implementação utiliza o OpenCV para FFT e NumPy para manipulacao da grade de frequencia
+# A filtragem de imagens é feita exclusivamente para imagens em escala de cinza para simplificar a representacao dos canais.
+# Imagens coloridas sao convertidas para escala de cinza e retornadas no mesmo formato de tipo de entrada.
+# Os cortes de frequencia sao normalizados em ciclos por pixel (0, 0.5], onde 0.5 e a frequencia de Nyquist.
+
 
 def _validar_imagem(imagem):
 	# Garante que as funções de conversão recebam dados de imagem utilizáveis.
@@ -102,3 +110,171 @@ def salvar_imagem(caminho, imagem):
 	# cv2.imwrite retorna False quando não consegue gravar no caminho informado.
 	if not cv2.imwrite(str(caminho), imagem):
 		raise OSError(f"Não foi possível salvar a imagem: {caminho}")
+
+# ---------------------------------------------------------------------
+# Funções de filtragem de frequência no domínio da frequência (LPF/HPF)
+# ---------------------------------------------------------------------
+
+def _get_freq_grid(shape):
+    """
+    Retorna a grade de frequência (ciclos/pixel) para uma imagem quadrada de shape (h, w).
+    Retorna duas matrizes (fx, fy) alinhadas com a FFT do OpenCV, onde cada valor
+    é a frequência normalizada com Nyquist (máximo = 0.5).
+    """
+    h, w = shape
+    # Frequências em ciclos por pixel, na ordem do OpenCV (não deslocada).
+    fx = np.fft.fftfreq(w)
+    fy = np.fft.fftfreq(h)
+    # meshgrid com indexing='xy' para corresponder às coordenadas da imagem (colunas, linhas)
+    fx_grid, fy_grid = np.meshgrid(fx, fy, indexing="xy")
+    return fx_grid, fy_grid
+
+def aplicar_lpf(imagem, frequencia_corte):
+    """
+    Aplica um filtro de passa-baixa circular (LPF) à imagem no domínio da frequência.
+
+    Parâmetros:
+        imagem: array NumPy (BGR ou escala de cinza).
+        frequencia_corte: frequência de corte em ciclos/pixel (0, 0.5].
+
+    Retorna:
+        imagem filtrada (mesmo dtype de entrada, mesma forma).
+    """
+    if not (0 < frequencia_corte <= 0.5):
+        raise ValueError("frequencia_corte deve estar no intervalo (0, 0.5] ciclos/pixel.")
+
+    _validar_imagem(imagem)
+    # Se for colorida (3 canais), converter para escala de cinza para filtragem
+    se_escala_de_cinza = imagem.ndim == 2
+    se_bgr = imagem.ndim == 3 and imagem.shape[2] == 3
+    if not (se_escala_de_cinza or se_bgr):
+        raise ValueError("A imagem deve ser BGR (3 canais) ou escala de cinza.")
+
+    if se_bgr:
+        cinza = converter_grayscale(imagem)
+        formato_original = imagem
+    else:
+        cinza = imagem.copy()
+        formato_original = None
+
+    # Converter para float64 para FFT
+    cinza_f = cinza.astype(np.float64)
+    # FFT do OpenCV espera float32, mas NumPy funciona igualmente; usar cv2.dft para centralização.
+    dft = cv2.dft(cinza_f)
+    # Centralizar para facilitar a criação do filtro
+    dft_shift = np.fft.fftshift(dft)
+    # Grade de frequência
+    fx, fy = _get_freq_grid(cinza_f.shape)
+    # Calcular a magnitude da frequência radial em ciclos/pixel
+    freq_mag = np.hypot(fx, fy)
+    # Máscara do filtro: 1 onde freq_mag <= corte, 0 caso contrário
+    filtro = (freq_mag <= frequencia_corte).astype(np.float64)
+    # Aplicar filtro
+    dft_shift_filtrada = dft_shift * filtro
+    # Reverter centralização
+    dft_filtrada = np.fft.ifftshift(dft_shift_filtrada)
+    # Converter para imagem real
+    imagem_filtrada_f = cv2.idft(dft_filtrada)
+    # Pegar a magnitude real (parte real)
+    imagem_filtrada_f = imagem_filtrada_f.real
+    # Normalizar para o mesmo intervalo de dtype original
+    if imagem.dtype == np.uint8:
+        imagem_filtrada_f = np.clip(imagem_filtrada_f, 0, 255)
+        imagem_filtrada = np.rint(imagem_filtrada_f).astype(np.uint8)
+    else:
+        # Preservar o tipo original (espera-se que seja float32 ou float64)
+        imagem_filtrada = imagem_filtrada_f.astype(imagem.dtype)
+
+    if formato_original is not None:
+        # Converter de volta para BGR usando as médias dos canais? Usar fusão de escala de cinza para BGR para consistência
+        # (Poderia recriar a imagem colorida original, mas mantendo os valores da escala de cinza)
+        # Simples: gerar uma imagem BGR convertida de volta da escala de cinza usando cv2.cvtColor(cinza_f, CV_8UC3)
+        # Mas precisamos corresponder ao tipo de entrada original (uint8?)
+        imagem_filtrada = cv2.cvtColor(imagem_filtrada, cv2.COLOR_GRAY2BGR)
+
+    return imagem_filtrada
+
+def aplicar_hpf(imagem, frequencia_corte):
+    """
+    Aplica um filtro de passa-alta circular (HPF) à imagem no domínio da frequência.
+
+    Parâmetros:
+        imagem: array NumPy (BGR ou escala de cinza).
+        frequencia_corte: frequência de corte em ciclos/pixel (0, 0.5].
+
+    Retorna:
+        imagem filtrada (mesmo dtype de entrada, mesma forma).
+    """
+    if not (0 < frequencia_corte <= 0.5):
+        raise ValueError("frequencia_corte deve estar no intervalo (0, 0.5] ciclos/pixel.")
+
+    _validar_imagem(imagem)
+    se_escala_de_cinza = imagem.ndim == 2
+    se_bgr = imagem.ndim == 3 and imagem.shape[2] == 3
+    if not (se_escala_de_cinza or se_bgr):
+        raise ValueError("A imagem deve ser BGR (3 canais) ou escala de cinza.")
+
+    if se_bgr:
+        cinza = converter_grayscale(imagem)
+        formato_original = imagem
+    else:
+        cinza = imagem.copy()
+        formato_original = None
+
+    cinza_f = cinza.astype(np.float64)
+    dft = cv2.dft(cinza_f)
+    dft_shift = np.fft.fftshift(dft)
+    fx, fy = _get_freq_grid(cinza_f.shape)
+    freq_mag = np.hypot(fx, fy)
+    # Filtro passa-alta: 1 onde freq_mag > corte
+    filtro = (freq_mag > frequencia_corte).astype(np.float64)
+    dft_shift_filtrada = dft_shift * filtro
+    dft_filtrada = np.fft.ifftshift(dft_shift_filtrada)
+    imagem_filtrada_f = cv2.idft(dft_filtrada).real
+
+    if imagem.dtype == np.uint8:
+        imagem_filtrada_f = np.clip(imagem_filtrada_f, 0, 255)
+        imagem_filtrada = np.rint(imagem_filtrada_f).astype(np.uint8)
+    else:
+        imagem_filtrada = imagem_filtrada_f.astype(imagem.dtype)
+
+    if formato_original is not None:
+        imagem_filtrada = cv2.cvtColor(imagem_filtrada, cv2.COLOR_GRAY2BGR)
+
+    return imagem_filtrada
+
+def visualizar_perfil_frequencia(imagem, mostrar=True):
+    """
+    Calcula e opcionalmente exibe o perfil radial de energia da imagem.
+    Retorna frequências em ciclos/pixel e energia média por faixa.
+    Este é um wrapper em torno da função existente `perfil_radial` de fft_mascara.py.
+    """
+    try:
+        from fft_mascara import perfil_radial
+    except ImportError:
+        raise ImportError(
+            "fft_mascara.py não está disponível; certifique-se de que este módulo está instalado."
+        )
+
+    if imagem is None:
+        raise ValueError("A imagem não foi carregada.")
+
+    # Converter para escala de cinza se necessário (o mesmo método que em fft_mascara)
+    if imagem.ndim == 3:
+        cinza = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
+    else:
+        cinza = imagem.copy()
+
+    freq, energia = perfil_radial(cinza)
+
+    if mostrar:
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(8, 5))
+        plt.semilogy(freq, energia)
+        plt.xlabel("Frequência (ciclos/pixel)")
+        plt.ylabel("Energia média")
+        plt.title("Perfil radial de energia da imagem")
+        plt.grid(alpha=0.3)
+        plt.show()
+
+    return freq, energia

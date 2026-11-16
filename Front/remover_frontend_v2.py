@@ -124,6 +124,8 @@ class App(ctk.CTk):
 
     def _set_controles(self, ativo: bool):
         estado = "normal" if ativo else "disabled"
+        # Durante o processamento não deixa remover a imagem (evita resultado órfão sem arquivo)
+        self.dropzone.definir_bloqueado(not ativo)
         self.painel.btn_toggle.configure(state=estado)
         self.painel.definir_estado(estado)
         self.toggle.btn_fundo.configure(state=estado)
